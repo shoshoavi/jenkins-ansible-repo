@@ -7,12 +7,6 @@ pipeline {
             name: 'Choose_Service'
         )
         string(name: 'DOCKERHUB_USERNAME', defaultValue: '', description: 'Enter your Docker Hub username')
-        string(name: 'IMAGE_NAME_Service1', defaultValue: '', description: 'Enter the image name for Service 1')
-        string(name: 'IMAGE_TAG_Service1', defaultValue: '', description: 'Enter the image tag for Service 1')
-        string(name: 'SERVICE1_IMAGE', defaultValue: 'busybox:latest', description: 'Enter the image for Service 1 (e.g., busybox:latest)')
-        string(name: 'IMAGE_NAME_Service2', defaultValue: '', description: 'Enter the image name for Service 2')
-        string(name: 'IMAGE_TAG_Service2', defaultValue: '', description: 'Enter the image tag for Service 2')
-        string(name: 'SERVICE2_IMAGE', defaultValue: 'alpine:latest', description: 'Enter the image for Service 2 (e.g., alpine:latest)')
         string(name: 'WEBSERVER_HOST', defaultValue: '', description: 'Enter the IP address of the web server')
         string(name: 'HOST_USERNAME', defaultValue: '', description: 'Enter the username for the host')
     }
@@ -27,10 +21,10 @@ pipeline {
                 script {
                     if (params.Choose_Service == 'Service 1 - Build image and container') {
                         echo "User selected Service 1: Building image and container"
-                        buildService1()
+                        buildService(serviceName: 'Service1', imageName: 'IMAGE_NAME_Service1', imageTag: 'IMAGE_TAG_Service1', dockerImage: 'SERVICE1_IMAGE')
                     } else if (params.Choose_Service == 'Service 2 - Build image and container') {
                         echo "User selected Service 2: Building image and container"
-                        buildService2()
+                        buildService(serviceName: 'Service2', imageName: 'IMAGE_NAME_Service2', imageTag: 'IMAGE_TAG_Service2', dockerImage: 'SERVICE2_IMAGE')
                     } else {
                         error("Invalid choice: ${params.Choose_Service}")
                     }
@@ -40,38 +34,38 @@ pipeline {
     }
 }
 
-def buildService1() {
+def buildService(serviceName, imageName, imageTag, dockerImage) {
     stage('Build Dockerfile') {
         script {
             def dockerfileContent = """
-                FROM ${params.SERVICE1_IMAGE}
-                CMD ["sh"]
+            FROM ${dockerImage}
+            CMD ["sh"]
             """
-            writeFile file: 'Dockerfile', text: dockerfileContent
+            writeFile file: "${serviceName}_Dockerfile", text: dockerfileContent
         }
     }
 
     stage('Build Docker Image') {
         script {
-            sh "docker build -t ${params.IMAGE_NAME_Service1}:${params.IMAGE_TAG_Service1} ."
+            sh "docker build -t ${imageName}:${imageTag} ."
         }
     }
 
     stage('Tag and Push Docker Image') {
         script {
-            sh "docker tag ${params.IMAGE_NAME_Service1}:${params.IMAGE_TAG_Service1} ${params.DOCKERHUB_USERNAME}/${params.IMAGE_NAME_Service1}:${params.IMAGE_TAG_Service1}"
             withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDENTIALS_ID}", passwordVariable: 'DOCKERHUB_PASSWORD', usernameVariable: 'DOCKERHUB_USERNAME')]) {
                 sh "echo ${DOCKERHUB_PASSWORD} | docker login -u ${params.DOCKERHUB_USERNAME} --password-stdin"
             }
-            sh "docker push ${params.DOCKERHUB_USERNAME}/${params.IMAGE_NAME_Service1}:${params.IMAGE_TAG_Service1}"
+            sh "docker tag ${imageName}:${imageTag} ${params.DOCKERHUB_USERNAME}/${imageName}:${imageTag}"
+            sh "docker push ${params.DOCKERHUB_USERNAME}/${imageName}:${imageTag}"
         }
     }
 
     stage('Make hosts file') {
         script {
             writeFile file: 'hosts', text: """
-[webservers]
-${params.WEBSERVER_HOST} ansible_user=${params.HOST_USERNAME}
+            [webservers]
+            ${params.WEBSERVER_HOST} ansible_user=${params.HOST_USERNAME}
             """
         }
     }
@@ -79,105 +73,29 @@ ${params.WEBSERVER_HOST} ansible_user=${params.HOST_USERNAME}
     stage('Deploy with Ansible') {
         script {
             def ansible_playbookContent = """
----
-- hosts: webservers
-  become: yes
+            ---
+            - hosts: webservers
+              become: yes
 
-  vars:
-    docker_hub_username: "${params.DOCKERHUB_USERNAME}"
-    docker_image_name: "${params.IMAGE_NAME_Service1}"
-    docker_image_tag: "${params.IMAGE_TAG_Service1}"
+            vars:
+              docker_hub_username: "${params.DOCKERHUB_USERNAME}"
+              docker_image_name: "${imageName}"
+              docker_image_tag: "${imageTag}"
 
-  tasks:
-    - name: Pull Docker image from Docker Hub
-      docker_image:
-        name: "{{ docker_hub_username }}/{{ docker_image_name }}"
-        tag: "{{ docker_image_tag }}"
+            tasks:
+              - name: Pull Docker image from Docker Hub
+                docker_image:
+                  name: "{{ docker_hub_username }}/{{ docker_image_name }}"
+                  tag: "{{ docker_image_tag }}"
 
-    - name: Run new container
-      docker_container:
-        name: mycontainer1
-        image: "{{ docker_hub_username }}/{{ docker_image_name }}:{{ docker_image_tag }}"
-        state: started
+              - name: Run new container
+                docker_container:
+                  name: mycontainer${serviceName.toLowerCase().replaceAll(' ', '')}
+                  image: "{{ docker_hub_username }}/{{ docker_image_name }}:{{ docker_image_tag }}"
+                  state: started
             """
-            writeFile file: 'deploy-playbook.yml', text: ansible_playbookContent
-        }
-    }
-
-    stage('ansible-playbook execution') {
-        script {
-            sh 'ansible-playbook -i hosts deploy-playbook.yml -e "ansible_ssh_common_args=\'-o StrictHostKeyChecking=no\'"'
-        }
-    }
-}
-
-def buildService2() {
-    stage('Build Dockerfile') {
-        script {
-            def dockerfileContent = """
-FROM ${params.SERVICE2_IMAGE}
-CMD ["sh"]
-            """
-            writeFile file: 'Dockerfile', text: dockerfileContent
-        }
-    }
-
-    stage('Build Docker Image') {
-        script {
-            sh "docker build -t ${params.IMAGE_NAME_Service2}:${params.IMAGE_TAG_Service2} ."
-        }
-    }
-
-    stage('Tag and Push Docker Image') {
-        script {
-            sh "docker tag ${params.IMAGE_NAME_Service2}:${params.IMAGE_TAG_Service2} ${params.DOCKERHUB_USERNAME}/${params.IMAGE_NAME_Service2}:${params.IMAGE_TAG_Service2}"
-            withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDENTIALS_ID}", passwordVariable: 'DOCKERHUB_PASSWORD', usernameVariable: 'DOCKERHUB_USERNAME')]) {
-                sh "echo ${DOCKERHUB_PASSWORD} | docker login -u ${params.DOCKERHUB_USERNAME} --password-stdin"
-            }
-            sh "docker push ${params.DOCKERHUB_USERNAME}/${params.IMAGE_NAME_Service2}:${params.IMAGE_TAG_Service2}"
-        }
-    }
-
-    stage('Make hosts file') {
-        script {
-            writeFile file: 'hosts', text: """
-[webservers]
-${params.WEBSERVER_HOST} ansible_user=${params.HOST_USERNAME}
-            """
-        }
-    }
-
-    stage('Deploy with Ansible') {
-        script {
-            def ansible_playbookContent = """
----
-- hosts: webservers
-  become: yes
-
-  vars:
-    docker_hub_username: "${params.DOCKERHUB_USERNAME}"
-    docker_image_name: "${params.IMAGE_NAME_Service2}"
-    docker_image_tag: "${params.IMAGE_TAG_Service2}"
-
-  tasks:
-    - name: Pull Docker image from Docker Hub
-      docker_image:
-        name: "{{ docker_hub_username }}/{{ docker_image_name }}"
-        tag: "{{ docker_image_tag }}"
-
-    - name: Run new container
-      docker_container:
-        name: mycontainer2
-        image: "{{ docker_hub_username }}/{{ docker_image_name }}:{{ docker_image_tag }}"
-        state: started
-            """
-            writeFile file: 'deploy-playbook.yml', text: ansible_playbookContent
-        }
-    }
-
-    stage('ansible-playbook execution') {
-        script {
-            sh 'ansible-playbook -i hosts deploy-playbook.yml -e "ansible_ssh_common_args=\'-o StrictHostKeyChecking=no\'"'
+            writeFile file: "${serviceName}_deploy-playbook.yml", text: ansible_playbookContent
+            sh 'ansible-playbook -i hosts ${serviceName}_deploy-playbook.yml -e "ansible_ssh_common_args=\'-o StrictHostKeyChecking=no\'"'
         }
     }
 }
